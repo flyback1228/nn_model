@@ -1,3 +1,6 @@
 {
-    "ros.distro": "noetic"
+    "ros.distro": "noetic",
+    "terminal.integrated.fontSize": 18,
+    "terminal.integrated.lineHeight": 1.2,
+    // "terminal.integrated.fontFamily": "'Droid Sans Mono', 'monospace', monospace"
 }

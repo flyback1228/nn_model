@@ -43,6 +43,7 @@ class MiMoCallback(Callback):
 
 	def get_reverse(self, nfwd, name, inames, onames, opts):
 		# You are required to keep a reference alive to the returned Callback object
+		print( nfwd, name, inames, onames)
 		class ReverseCallback(Callback):
 			def __init__(self, name, opts={}):
 				Callback.__init__(self)
