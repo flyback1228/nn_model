@@ -37,55 +37,69 @@ class JaxCallback(ca.Callback):
         return True
 
     def get_jacobian(self, name, inames, onames, opts):
+        print(self.name_in)
+        print(self.name_out)
         print(name, inames, onames, opts)
         new_out=[]
-        new_dim=[]
+        new_out_dim=[]
         opts={}
         for i,out_ in enumerate(self.f):
             for j in range(self.opts['n_in']):
                 new_out.append(jax.jacfwd(out_,argnums=j))
-                new_dim.append([self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1],self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1]])
+                new_out_dim.append([self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1],self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1]])
 
         opts['in_dim']=self.opts['in_dim']
-        opts['n_in']=self.opts['n_in']
-        opts['out_dim']=new_dim
+        #opts['in_dim'].append(self.opts['out_dim'])
+        opts['n_in']=self.opts['n_in']#+len(self.f)
+        opts['out_dim']=new_out_dim
         callback = JaxCallback(name,new_out, opts=opts)
 
-        # value = ca.DM([1,2,3])
-        # y = callback(value)
-        # print(y)
+        value_x = ca.DM([1,2,3])
+        value_y = ca.DM([3,1,2,1.5])
+        y = callback(value_x,value_y)
+
+        print(y)
         self.refs.append(callback)
 
         nominal_in = self.mx_in()        
         nominal_out = self.mx_out()
-        #adj_seed = self.mx_out()
+        adj_seed = self.mx_out()
         casadi_bal = callback.call(nominal_in)
-        return ca.Function(name, nominal_in + nominal_out, casadi_bal, inames, onames)
+        #casadi_bal = [bal.T() for bal in casadi_bal]
+        out = ca.horzcat(*casadi_bal)
+        return ca.Function(name, nominal_in + nominal_out, [out], inames, onames)
         
 
 
-def f(x):
-    return jnp.asarray([x[0], 5*x[2], 4*x[1]**2 - 2*x[2], x[2] * jnp.sin(x[0])])
-opts={'in_dim':[[3,1]],'out_dim':[[4,1]],'n_in':1}
+def f(x,y):
+    return jnp.asarray([x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], jnp.exp(y[3]) + x[2] * jnp.sin(x[0])])
+opts={'in_dim':[[3,1],[4,1]],'out_dim':[[4,1]],'n_in':2}
 
 evaluator = JaxCallback('f',[f],opts)
 
-value = ca.DM([1,2,3])
-print(f(jnp.asarray(value)))
+value_x = ca.DM([1,2,3])
+value_y = ca.DM([3,1,2,1.5])
+print(f(jnp.asarray(value_x),jnp.asarray(value_y)))
 
-y = evaluator(value)
-print(y)
+z = evaluator(value_x,value_y)
+print(z)
 
-jac = jax.jacfwd(jax.jacfwd(f))(jnp.reshape(jnp.asarray(value),(3,)))
+jac = jax.jacfwd(f)(jnp.reshape(jnp.asarray(value_x),(3,)),jnp.reshape(jnp.asarray(value_y),(4,)))
 print(jac)
-t = jnp.transpose(jac,axes=[0,2,1])
+
+hes = jax.jacfwd(jax.jacfwd(f))(jnp.reshape(jnp.asarray(value_x),(3,)),jnp.reshape(jnp.asarray(value_y),(4,)))
+print(hes)
+t = jnp.transpose(hes,axes=[2,0,1])
 print(t)
 
 x = ca.MX.sym("x",3,1)
-J = ca.Function('J', [x], [ca.jacobian(evaluator(x), x)])
-H = ca.Function('h', [x], [ca.jacobian(J(x), x)])
-print(J(value))
-print(H(value))
+y = ca.MX.sym("x",4,1)
+J = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), x)])
+print('-----------------')
+print(J(value_x,value_y))
+
+H = ca.Function('h', [x,y], [ca.jacobian(J(x,y), y)])
+print(H(value_x,value_y))
 
 ca_y = ca.vertcat(x[0], 5*x[2], 4*x[1]**2 - 2*x[2], x[2] * ca.sin(x[0]))
 ca_f = ca.Function('ca_f', [x], [ca_y])
