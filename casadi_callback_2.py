@@ -24,6 +24,7 @@ class ReverseCallback(ca.Callback):
     def get_sparsity_out(self, i):
         return ca.Sparsity.dense(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])
     def eval(self, arg):
+        print('arg')
         print(arg)
         jarg = [jnp.asarray(arg[i]) for i in range(self.n_out())]
         #print(jarg)
@@ -38,8 +39,34 @@ class ReverseCallback(ca.Callback):
         return True
 
     def get_reverse(self, nfwd, name, inames, onames, opts):
-        self.rev_callback = ReverseCallback(name)
+        print(nfwd, name, inames, onames, opts)
+        print(self.n_in())
+        print(self.n_out())
+        fs=[]
+        for f in self.f:
+            for i in range(self.opts['original_n_in']):
+                fs.append(jax.jacobian(f,i))
+
+        new_opts={'n_in':self.opts['n_in']+2*len(self.f)}
+        in_dim = self.opts['in_dim']
+        print('n_out:',self.n_out())
+        print(in_dim)
+        
+        for dim in self.opts['out_dim']:
+            in_dim.append(dim)
+        print(in_dim)
+        for dim in self.opts['out_dim']:
+            in_dim.append([dim[0],dim[1]*nfwd] )        
+        new_opts['in_dim'] = in_dim
+        print(in_dim)
+        out_dim=[]
+        for dim in self.opts['in_dim']:
+            out_dim.append([dim[0],dim[1]*nfwd])
+        new_opts['out_dim'] = out_dim
+
+        self.rev_callback = ReverseCallback(name,fs,new_opts)
         return self.rev_callback
+
 
 class JaxCallback(ca.Callback):
     def __init__(self, name, f, opts={}):
@@ -80,17 +107,17 @@ class JaxCallback(ca.Callback):
             for i in range(self.n_in()):
                 fs.append(jax.jacobian(f,i))
 
-        new_opts={'n_in':self.opts['n_in']+2*len(self.f)}
+        new_opts={'n_in':self.opts['n_in']+2*len(self.f),'original_n_in':2}
         in_dim = self.opts['in_dim']
         for dim in self.opts['out_dim']:
             in_dim.append(dim )
         for dim in self.opts['out_dim']:
-            in_dim.append([dim[0]*dim[1],nfwd] )        
+            in_dim.append([dim[0],dim[1]*nfwd] )        
         new_opts['in_dim'] = in_dim
 
         out_dim=[]
-        for dim in self.opts['in_dim']:
-            out_dim.append([dim[0]*dim[1],nfwd])
+        for i in range(self.opts['n_in']):#self.opts['in_dim']:
+            out_dim.append([in_dim[i][0],in_dim[i][1]*nfwd])
         new_opts['out_dim'] = out_dim
 
         self.rev_callback = ReverseCallback(name,fs,new_opts)
