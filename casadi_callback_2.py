@@ -2,67 +2,54 @@ import jax.numpy as jnp
 import casadi as ca
 import numpy as np
 import jax
+from jax import config
+config.update('jax_enable_x64', True)
+
 
 '''
 '''
-def concat_jac(f,rows):    
-    return lambda *xs: jnp.hstack([jnp.reshape(jax.jacfwd(f,argnums=i)(*xs),(rows,-1)) for i in range(len(xs))])
-
+def concat_jac(fs,in_dim):
+    return [lambda *xs,i=i: jnp.hstack([jnp.reshape(jax.jacrev(f,argnums=i)(*xs).flatten('F'),(np.prod(in_dim[i]),-1)) for f in fs]) for i in range(len(in_dim))]
+    
 
 class ReverseCallback(ca.Callback):
     def __init__(self, name, f, opts={}):
         ca.Callback.__init__(self)
         self.f = f
         self.opts = opts
+        self.arg_len = self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']        
         self.construct(name, {})
-        self.refs=[]
+        self.extend_return = [ca.Sparsity(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1]) for i in range(len(self.f),self.n_out())]
+        
     def get_n_in(self): return self.opts['n_in']
-    def get_n_out(self): return len(self.f)
+    def get_n_out(self): return self.opts['n_out']
     def get_sparsity_in(self, i):
         return ca.Sparsity.dense(self.opts['in_dim'][i][0],self.opts['in_dim'][i][1])
 
     def get_sparsity_out(self, i):
-        return ca.Sparsity.dense(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])
-    def eval(self, arg):
-        print('arg')
-        print(arg)
-        jarg = [jnp.asarray(arg[i]) for i in range(self.n_out())]
-        #print(jarg)
-        #values = [self.f[i](*jarg) for i in range(self.n_out())]
-        #jarg = [jnp.reshape(a,(-1,)) for a in jarg]
-        #print(jarg)
+        return ca.Sparsity.dense(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1]) if i<len(self.f) else ca.Sparsity(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])
 
-        return_value = [np.asarray(jnp.transpose(jnp.reshape(self.f[i](*jarg),(self.opts['out_dim'][i][1],self.opts['out_dim'][i][0])))) for i in range(self.n_out())]
+    def eval(self, arg):                
+        jarg = [jnp.reshape(jnp.asarray(arg[i]),(np.prod(self.opts['in_dim'][i]),)) for i in range(self.arg_len)]
+        return_value = [np.asarray(f(*jarg)) for f in self.f]
+        return_value.extend(self.extend_return)
         return return_value
 
     def has_reverse(self,nadj):
         return True
 
-    def get_reverse(self, nfwd, name, inames, onames, opts):
-        print(nfwd, name, inames, onames, opts)
-        print(self.n_in())
-        print(self.n_out())
-        fs=[]
-        for f in self.f:
-            for i in range(self.opts['original_n_in']):
-                fs.append(jax.jacobian(f,i))
-
-        new_opts={'n_in':self.opts['n_in']+2*len(self.f)}
-        in_dim = self.opts['in_dim']
-        print('n_out:',self.n_out())
-        print(in_dim)
+    def get_reverse(self, nfwd, name, inames, onames, opts):       
         
-        for dim in self.opts['out_dim']:
-            in_dim.append(dim)
-        print(in_dim)
-        for dim in self.opts['out_dim']:
-            in_dim.append([dim[0],dim[1]*nfwd] )        
+        fs = concat_jac(self.f,self.opts['in_dim'][0:self.arg_len])
+
+        new_opts={'n_in':self.opts['n_in']+2*self.opts['n_out'],'n_out':self.opts['n_in']}
+        new_opts['original_n_in']=self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
+        in_dim = []
+        in_dim.extend(self.opts['in_dim'])
+        in_dim.extend(self.opts['out_dim'])
+        in_dim.extend([[dim[0],dim[1]*nfwd] for dim in self.opts['out_dim']])        
         new_opts['in_dim'] = in_dim
-        print(in_dim)
-        out_dim=[]
-        for dim in self.opts['in_dim']:
-            out_dim.append([dim[0],dim[1]*nfwd])
-        new_opts['out_dim'] = out_dim
+        new_opts['out_dim'] = [[dim[0],dim[1]*nfwd] for dim in self.opts['in_dim']]
 
         self.rev_callback = ReverseCallback(name,fs,new_opts)
         return self.rev_callback
@@ -74,7 +61,6 @@ class JaxCallback(ca.Callback):
         self.f = f
         self.opts = opts
         self.construct(name, {})
-        self.refs=[]
 
     # Number of inputs and outputs
     def get_n_in(self): return self.opts['n_in']
@@ -91,24 +77,24 @@ class JaxCallback(ca.Callback):
 
     # Evaluate numerically
     def eval(self, arg):
-        jarg = [jnp.asarray(ar) for ar in arg]
-        values = [self.f[i](*jarg) for i in range(self.n_out())]
+        jarg = [jnp.reshape(jnp.asarray(arg[i]),(np.prod(self.opts['in_dim'][i]),)) for i in range(len(arg))]
+        #jarg = [jnp.reshape(jnp.asarray(arg[i]),(np.prod(self.opts['in_dim'][i]),)) for i in range(self.arg_len)]
+        #values = [self.f[i](*jarg) for i in range(self.n_out())]
 
         return_value = [np.asarray(jnp.reshape(self.f[i](*jarg),self.opts['out_dim'][i])) for i in range(self.n_out())]
+        
         return return_value
 
     def has_reverse(self,nadj):
         return True
 
-    def get_reverse(self, nfwd, name, inames, onames, opts):
-        print(nfwd, name, inames, onames)
-        fs=[]
-        for f in self.f:
-            for i in range(self.n_in()):
-                fs.append(jax.jacobian(f,i))
-
-        new_opts={'n_in':self.opts['n_in']+2*len(self.f),'original_n_in':2}
+    def get_reverse(self, nfwd, name, inames, onames, opts):        
+        arg_len = self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
+        fs = concat_jac(self.f,self.opts['in_dim'][0:arg_len])
         in_dim = self.opts['in_dim']
+
+        new_opts={'n_in':self.opts['n_in']+2*self.opts['n_out'],'original_n_in':self.opts['n_in'],'n_out':self.opts['n_in']}
+        
         for dim in self.opts['out_dim']:
             in_dim.append(dim )
         for dim in self.opts['out_dim']:
@@ -116,54 +102,22 @@ class JaxCallback(ca.Callback):
         new_opts['in_dim'] = in_dim
 
         out_dim=[]
-        for i in range(self.opts['n_in']):#self.opts['in_dim']:
+        for i in range(arg_len):#self.opts['in_dim']:
             out_dim.append([in_dim[i][0],in_dim[i][1]*nfwd])
         new_opts['out_dim'] = out_dim
 
         self.rev_callback = ReverseCallback(name,fs,new_opts)
         return self.rev_callback
 
-        # print(nfwd,name, inames, onames, opts)        
-        # new_out=[]
-        # new_out_dim=[]
-        # opts={}
-        # cols = [self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1] for j in range(self.opts['n_in'])]
-        # cols = np.sum(cols)
-        # for i,out_ in enumerate(self.f):
-        #     new_out.append(concat_jac(out_,self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1]))
-            
-        #     new_out_dim.append([self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1],cols])
-        #     #for j in range(self.opts['n_in']):
-        #     #    new_out.append(jax.jacfwd(out_,argnums=j))
-        #     #    new_out_dim.append([self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1],self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1]])
 
-        # opts['in_dim']=self.opts['in_dim']
-        # opts['n_in']=self.opts['n_in']#+len(self.f)
-        # opts['out_dim']=new_out_dim
-        # callback = JaxCallback(name,new_out, opts=opts)
-
-        # value_x = ca.DM([1,2,3])
-        # value_y = ca.DM([3,1,2,1.5])
-        # y = callback(value_x,value_y)
-        # print(y)
-
-        # self.refs.append(callback)
-
-        # nominal_in = self.mx_in()        
-        # nominal_out = self.mx_out()
-        # adj_seed = self.mx_out()
-        # casadi_bal = callback.call(nominal_in)
-        # #casadi_bal = [bal.T() for bal in casadi_bal]
-        # #out = ca.horzcat(*casadi_bal)
-        # return ca.Function(name, nominal_in + nominal_out, casadi_bal, inames, onames)
         
 
 
 def f(x,y):
-    return jnp.asarray([x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], jnp.exp(y[3]) + x[2] * jnp.sin(x[0])])
-opts={'in_dim':[[3,1],[4,1]],'out_dim':[[4,1]],'n_in':2}
+    return jnp.asarray([x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], jnp.exp(y[3]) + x[2] * jnp.sin(x[0]),x[1]*y[2]])
+opts={'in_dim':[[3,1],[4,1]],'out_dim':[[5,1]],'n_in':2,'n_out':1}
 
-evaluator = JaxCallback('f',[f],opts)
+evaluator = ReverseCallback('f',[f],opts)
 
 DM_x = ca.DM([1,2,3])
 DM_y = ca.DM([3,1,2,1.5])
@@ -181,7 +135,7 @@ print(z_callback)
 
 x = ca.MX.sym("x",3,1)
 y = ca.MX.sym("x",4,1)
-z = ca.vertcat(x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], ca.exp(y[3]) + x[2] * ca.sin(x[0]))
+z = ca.vertcat(x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], ca.exp(y[3]) + x[2] * ca.sin(x[0]),x[1]*y[2])
 F = ca.Function('F', [x,y], [z])
 z_casadi = F(DM_x,DM_y)
 print('casadi evaluate:')
