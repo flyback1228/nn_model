@@ -121,8 +121,8 @@ class GPR(TensorFlowEvaluator):
 
 # Create
 np.random.seed(0)
-data = np.random.normal(loc=0.5, scale=1, size=(N, nd))
-value = np.random.random((N, 1))
+data = np.random.normal(loc=0.5, scale=1, size=(1, nd))
+value = np.random.random((1, 1))
 
 model = gpflow.models.GPR(data=(data, value),
                           kernel=gpflow.kernels.Constant(nd) + gpflow.kernels.Linear(nd) + gpflow.kernels.White(
@@ -133,17 +133,22 @@ optimizer.minimize(
     variables=model.trainable_variables,
     options=dict(disp=True, maxiter=100),
 )
+arg = np.random.random((N, nd))
 
-pr = model.predict_y(np.random.random((1, nd)))
-print(pr)
+pr = model.predict_y(arg)
+print('model.predict_y',pr)
 
-import tensorflow as tf
+#import tensorflow as tf
 
 # opts = {}
 # opts["out_dim"] = [1, 1]
 # opts["in_dim"] = [nd, 1]
-opts={'in_dim':[[1,nd]],'out_dim':[[1,1]],'n_in':1,'n_out':1}
-gpr = JaxCasadiCallback('f1',jax2tf.call_tf(model.predict_y),opts)
+opts={'in_dim':[[N,nd]],'out_dim':[[N,1]],'n_in':1,'n_out':1}
+f = jax.jit(jax2tf.call_tf(lambda x: model.predict_y(x)[0]))
+print('f eval:',f((arg)))
+
+gpr = JaxCasadiCallback('f1',f ,opts)
+print(gpr(arg))
 #gpr = GPR(model, opts=opts)
 
 
