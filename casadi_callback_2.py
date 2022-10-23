@@ -3,6 +3,7 @@ import casadi as ca
 import numpy as np
 import jax
 from jax import config
+import copy
 config.update('jax_enable_x64', True)
 
 
@@ -57,11 +58,12 @@ class ReverseCallback(ca.Callback):
 class VjpCallback(ca.Callback):
     def __init__(self, name, f, opts={}):
         ca.Callback.__init__(self)
-        self.f = f
+        self.f = jax.jit(f)
         
         self.opts = opts
         self.arg_len = self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']       
-        self.rev_f = lambda x: jax.vmap(jax.vjp(self.f,*x[0:self.arg_len])[1],in_axes=-1,out_axes=-1)(*x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']]) 
+        rev_f = lambda x: jax.vmap(jax.vjp(self.f,*x[0:self.arg_len])[1],in_axes=1,out_axes=-1)(*x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']]) 
+        self.rev_f = jax.jit(rev_f)
         self.construct(name, {})
         
         
@@ -76,8 +78,6 @@ class VjpCallback(ca.Callback):
     def eval(self, arg):                
         jarg = [jnp.asarray(arg[i]) for i in range(self.arg_len)]
         return_value = np.asarray(self.f(*jarg)) 
-        
-               
         return [return_value]
 
     def has_reverse(self,nadj):
@@ -90,7 +90,8 @@ class VjpCallback(ca.Callback):
                 ca.Callback.__init__(self)
                 self.f = f
                 self.opts=opts
-                self.rev_f = lambda x: jax.vmap(jax.vjp(self.f,x[0:self.opts['n_in']])[1],in_axes=-1,out_axes=-1)(tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) 
+                rev_f = lambda x: jax.vmap(jax.vjp(self.f,x[0:self.opts['n_in']])[1],in_axes=1,out_axes=-1)(tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) 
+                self.rev_f = jax.jit(rev_f)
                 self.construct(name, {})
 
             def get_n_in(self): return self.opts['n_in']
@@ -104,38 +105,23 @@ class VjpCallback(ca.Callback):
 
             # Evaluate numerically
             def eval(self, arg): 
-                print('args: ')    
-                   
-                #print(arg)
-                jarg = [jnp.squeeze(jnp.reshape(jnp.asarray(arg[i]),self.opts['in_dim'][i])) for i in range(len(arg)) ]  
-                #print([ar.shape for ar in jarg])        
-                #original_out = int((self.opts['n_in']-new_opts['original_n_in'])/2)
-                #jarg[self.opts['n_in']-original_out:] = [jnp.squeeze(jnp.reshape(jarg[i+self.opts['original_n_in']+original_out],)) for i in range(original_out)]
-                
-                #original_out = int(self.opts['n_in']-(self.opts['n_in']-self.opts['original_n_in'])/2)
-                #new_jarg =[jnp.reshape(ar,(-1,)) for ar in jarg[0:self.opts['original_n_in']]
-                
-
+                jarg = [jnp.squeeze(jnp.reshape(jnp.asarray(arg[i]),self.opts['in_dim'][i])) for i in range(len(arg)) ] 
                 ret = self.f(jarg)
-                if(isinstance(ret[0], (list, tuple))):
-                    ret=ret[0]
-                print([r.shape for r in ret])
-                print(ret)
-                #f = self.f_of_f(*new_jarg[0:self.opts['original_n_in']])
-                #ret = jax.vmap(f)(*jarg[original_out:])
+                ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
                 return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]
 
             def has_reverse(self, nadj):
                 return True
             
             def get_reverse(self, nfwd, name, inames, onames, opts): 
-                #vjp_f_of_f = lambda *x: jax.vjp(f,*x)[1]
                 new_opts={'n_in':self.opts['n_in']+2*self.opts['n_out'],'n_out':self.opts['n_in']}
                 new_opts['original_n_in']=self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
                 in_dim = []
-                in_dim.extend(self.opts['in_dim'])
-                in_dim.extend(self.opts['out_dim'])
-                in_dim.extend([dim+[nfwd] for dim in self.opts['out_dim']])        
+                in_dim.extend(copy.deepcopy(self.opts['in_dim']))
+                in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+                in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+                for i in range(self.opts['n_out']):
+                    in_dim[i+self.opts['n_in']+self.opts['n_out']].insert(1,nfwd)   
                 new_opts['in_dim'] = in_dim
                 new_opts['out_dim'] = [dim+[nfwd] for dim in self.opts['in_dim']]
                 self.rev_callback = ReverseFun(name,self.rev_f,new_opts)
@@ -147,9 +133,11 @@ class VjpCallback(ca.Callback):
         new_opts={'n_in':self.opts['n_in']+2*self.opts['n_out'],'n_out':self.opts['n_in'],'n_fwd':nfwd}
         new_opts['original_n_in']=self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
         in_dim = []
-        in_dim.extend(self.opts['in_dim'])
-        in_dim.extend(self.opts['out_dim'])
-        in_dim.extend([dim+[nfwd] for dim in self.opts['out_dim']])        
+        in_dim.extend(copy.deepcopy(self.opts['in_dim']))
+        in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+        in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+        for i in range(self.opts['n_out']):
+            in_dim[i+self.opts['n_in']+self.opts['n_out']].insert(1,nfwd)   
         new_opts['in_dim'] = in_dim
         new_opts['out_dim'] = [dim+[nfwd] for dim in self.opts['in_dim']]
         self.rev_callback = ReverseFun(name,self.rev_f,new_opts)
@@ -298,8 +286,8 @@ def f(x,y):
 opts={'in_dim':[[3,1],[4,1]],'out_dim':[[5,1]],'n_in':2,'n_out':1}
 
 
-evaluator1 = VjpCallbackSingle('f1',f,opts)
-
+#evaluator1 = VjpCallbackSingle('f1',f,opts)
+evaluator1 = VjpCallback('f1',f,opts)
 DM_x = ca.DM([1,2,3])
 DM_y = ca.DM([3,1,2,1.5])
 #print(f(jnp.asarray(value_x),jnp.asarray(value_y)))
@@ -311,36 +299,7 @@ print('---------------------------------')
 print('--------------------------------')
 
 z_callback = evaluator1(DM_x,DM_y)
-print('callback evaluate:')
-print(z_callback)
-
-x = ca.MX.sym("x",3,1)
-y = ca.MX.sym("x",4,1)
-J_callback = ca.Function('J1', [x,y], [ca.jacobian(evaluator1(x,y), x)])
-#J_callback_y = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), y)])
-jac_callback = J_callback(DM_x,DM_y)
-#J_callback_y(DM_x,DM_y)
-print('callback jacobian:')
-print(jac_callback)
-
-H_callback = ca.Function('H1', [x,y], [ca.jacobian(J_callback(x,y), x)])
-hes_callback = H_callback(DM_x,DM_y)
-print('callback hessian:')
-print(hes_callback)
-
-
-
-
-print('---------------------------------')
-print('---------------------------------')
-
-z_jax = f(jnp_x,jnp_y)
-print('jax evaluate:')
-print(z_jax)
-
-evaluator = ReverseCallback('f',[f],opts)
-z_callback = evaluator(DM_x,DM_y)
-print('callback evaluate:')
+print('callback vjp evaluate:')
 print(z_callback)
 
 x = ca.MX.sym("x",3,1)
@@ -348,46 +307,82 @@ y = ca.MX.sym("x",4,1)
 z = ca.vertcat(x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], ca.exp(y[3]) + x[2] * ca.sin(x[0]),x[1]*y[2])
 F = ca.Function('F', [x,y], [z])
 z_casadi = F(DM_x,DM_y)
-print('casadi evaluate:')
+print('casadi original evaluate:')
 print(z_casadi)
-print('----------------------------------------')
 
 
-jac_jax = jax.jacfwd(f)(jnp_x,jnp_y)
-print('jax jacobian:')
-print(jac_jax)
-
-J_callback = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), x)])
-#J_callback_y = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), y)])
+J_callback = ca.Function('J1', [x,y], [ca.jacobian(evaluator1(x,y), x)])
 jac_callback = J_callback(DM_x,DM_y)
-#J_callback_y(DM_x,DM_y)
-print('callback jacobian:')
+print('callback vjp jacobian:')
 print(jac_callback)
-
 J_casadi = ca.Function('j_casadi', [x,y], [ca.jacobian(F(x,y), x)])
 jac_casadi = J_casadi(DM_x,DM_y)
 print('casasi jacobian:')
 print(jac_casadi)
-print('----------------------------------------')
 
-
-hes_jax = jax.jacfwd(jax.jacfwd(f),argnums=0)(jnp_x,jnp_y)
-print('jax hessian:')
-print(hes_jax)
-
-H_callback = ca.Function('H', [x,y], [ca.jacobian(J_callback(x,y), x)])
+H_callback = ca.Function('H1', [x,y], [ca.jacobian(J_callback(x,y), x)])
 hes_callback = H_callback(DM_x,DM_y)
-print('callback hessian:')
+print('callback vjp hessian:')
 print(hes_callback)
-
-#t = jnp.transpose(hes,axes=[2,0,1])
-#print(t)
-
 H_casadi = ca.Function('h_casadi', [x,y], [ca.jacobian(J_casadi(x,y), x)])
 hes_casadi = H_casadi(DM_x,DM_y)
 print('casasi hessian:')
 print(hes_casadi)
-print('----------------------------------------')
+
+
+print('---------------------------------')
+print('---------------------------------')
+
+#z_jax = f(jnp_x,jnp_y)
+#print('jax evaluate:')
+#print(z_jax)
+
+#evaluator = ReverseCallback('f',[f],opts)
+#z_callback = evaluator(DM_x,DM_y)
+#print('callback evaluate:')
+#print(z_callback)
+
+#x = ca.MX.sym("x",3,1)
+#y = ca.MX.sym("x",4,1)
+
+#print('----------------------------------------')
+
+
+#jac_jax = jax.jacfwd(f)(jnp_x,jnp_y)
+#print('jax jacobian:')
+#print(jac_jax)
+
+#J_callback = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), x)])
+#J_callback_y = ca.Function('J', [x,y], [ca.jacobian(evaluator(x,y), y)])
+#jac_callback = J_callback(DM_x,DM_y)
+#J_callback_y(DM_x,DM_y)
+#print('callback jacobian:')
+#print(jac_callback)
+
+#J_casadi = ca.Function('j_casadi', [x,y], [ca.jacobian(F(x,y), x)])
+#jac_casadi = J_casadi(DM_x,DM_y)
+#print('casasi jacobian:')
+#print(jac_casadi)
+#print('----------------------------------------')
+
+
+#hes_jax = jax.jacfwd(jax.jacfwd(f),argnums=0)(jnp_x,jnp_y)
+#print('jax hessian:')
+#print(hes_jax)
+
+# H_callback = ca.Function('H', [x,y], [ca.jacobian(J_callback(x,y), x)])
+# hes_callback = H_callback(DM_x,DM_y)
+# print('callback hessian:')
+# print(hes_callback)
+
+# #t = jnp.transpose(hes,axes=[2,0,1])
+# #print(t)
+
+# H_casadi = ca.Function('h_casadi', [x,y], [ca.jacobian(J_casadi(x,y), x)])
+# hes_casadi = H_casadi(DM_x,DM_y)
+# print('casasi hessian:')
+# print(hes_casadi)
+# print('----------------------------------------')
 
 # H = ca.Function('h', [x,y], [ca.jacobian(J(x,y), y)])
 # print(H(value_x,value_y))

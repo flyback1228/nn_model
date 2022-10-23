@@ -1,4 +1,6 @@
 from casadi import *
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 T = 10. # Time horizon
 N = 20 # number of control intervals
