@@ -95,6 +95,98 @@ class JaxCasadiCallback(ca.Callback):
         return self.rev_callback
 
 
+class JaxCasadiCallbackSISO(ca.Callback):
+    def __init__(self, name, f, opts={}):
+        ca.Callback.__init__(self)
+        #self.f = jax.jit(f)
+        self.f = f
+        self.opts = opts
+        #self.arg_len = self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']       
+        rev_f = lambda x: jax.vjp(self.f,x[0])[1](x[2]) 
+        self.rev_f = jax.jit(rev_f)
+        self.construct(name, {})
+        
+        
+    def get_n_in(self): return 1
+    def get_n_out(self): return 1
+    def get_sparsity_in(self, i):
+        return ca.Sparsity.dense(self.opts['in_dim'][i][0],self.opts['in_dim'][i][1])
+
+    def get_sparsity_out(self, i):
+        return ca.Sparsity.dense(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])# if i<len(self.f) else ca.Sparsity(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])
+
+    def eval(self, arg):
+        #print(arg)
+        #print(jnp.asarray(arg[0]))
+        return_value = np.asarray(self.f(jnp.asarray(arg[0]))) 
+        return [return_value]
+
+    def has_reverse(self,nadj):
+        return nadj==1
+
+    def get_reverse(self, nfwd, name, inames, onames, opts):       
+        
+        class ReverseFun(ca.Callback):
+            def __init__(self,name,f,opts):
+                ca.Callback.__init__(self)
+                self.f = f
+                self.opts=opts
+                rev_f = lambda x: jax.vjp(self.f,x[0:self.opts['n_in']])[1](tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) 
+                self.rev_f = jax.jit(rev_f)
+                self.construct(name, {})
+
+            def get_n_in(self): return self.opts['n_in']
+            def get_n_out(self): return self.opts['n_out']
+
+            def get_sparsity_in(self, i):
+                return ca.Sparsity.dense(self.opts['in_dim'][i][0],np.prod(self.opts['in_dim'][i][1:]))
+
+            def get_sparsity_out(self, i):
+                return ca.Sparsity.dense(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:]))
+
+            # Evaluate numerically
+            def eval(self, arg):
+                #print(arg)
+                jarg = [jnp.asarray(arg[i]) for i in range(len(arg))]
+                #print(jarg)
+                ret = self.f(jarg)
+                ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
+                return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]
+
+            def has_reverse(self, nadj):
+                return nadj==1
+            
+            def get_reverse(self, nfwd, name, inames, onames, opts): 
+                new_opts={'n_in':self.opts['n_in']+2*self.opts['n_out'],'n_out':self.opts['n_in']}
+                new_opts['original_n_in']=self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
+                in_dim = []
+                in_dim.extend(copy.deepcopy(self.opts['in_dim']))
+                in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+                in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+                for i in range(self.opts['n_out']):
+                    in_dim[i+self.opts['n_in']+self.opts['n_out']].insert(1,nfwd)   
+                new_opts['in_dim'] = in_dim
+                new_opts['out_dim'] = [dim+[nfwd] for dim in self.opts['in_dim']]
+                self.rev_callback = ReverseFun(name,self.rev_f,new_opts)
+                return self.rev_callback
+
+
+
+        
+        new_opts={'n_in':3,'n_out':1,'n_fwd':nfwd}
+        #new_opts['original_n_in']=self.opts['n_in'] if not 'original_n_in' in self.opts else self.opts['original_n_in']
+        in_dim = []
+        in_dim.extend(copy.deepcopy(self.opts['in_dim']))
+        in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+        in_dim.extend(copy.deepcopy(self.opts['out_dim']))
+        for i in range(self.opts['n_out']):
+            in_dim[i+self.opts['n_in']+self.opts['n_out']].insert(1,nfwd)   
+        new_opts['in_dim'] = in_dim
+        new_opts['out_dim'] = [dim+[nfwd] for dim in self.opts['in_dim']]
+        self.rev_callback = ReverseFun(name,self.rev_f,new_opts)
+        return self.rev_callback
+
+
 
 if __name__ =='__main__':
     f_test = lambda x,y: jnp.asarray([x[0]*y[0], 5*x[2]+y[1], 4*x[1]**2+y[1]*y[2] - 2*x[2], jnp.exp(y[3]) + x[2] * jnp.sin(x[0]),x[1]*y[2]])

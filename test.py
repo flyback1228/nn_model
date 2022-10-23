@@ -3,7 +3,8 @@ import jax
 from jax.experimental import jax2tf
 import jax.numpy as jnp
 import numpy as np
-from jax_casadi_callback import JaxCasadiCallback
+from jax_casadi_callback import JaxCasadiCallback,JaxCasadiCallbackSISO
+
 
 T = 10.  # Time horizon
 N = 20  # number of control intervals
@@ -133,23 +134,29 @@ optimizer.minimize(
     variables=model.trainable_variables,
     options=dict(disp=True, maxiter=100),
 )
-arg = np.random.random((N, nd))
+arg = np.random.random((nd, N))
 
-pr = model.predict_y(arg)
-print('model.predict_y',pr)
+pr = model.predict_y(np.transpose(arg))
+print('model.predict_y',pr[0])
+
+arg1 = np.random.random((nd, 1))
+pr = model.predict_y(np.transpose(arg1))
+print('model.predict_y',pr[0])
 
 #import tensorflow as tf
 
 # opts = {}
 # opts["out_dim"] = [1, 1]
 # opts["in_dim"] = [nd, 1]
-opts={'in_dim':[[N,nd]],'out_dim':[[N,1]],'n_in':1,'n_out':1}
-f = jax.jit(jax2tf.call_tf(lambda x: model.predict_y(x)[0]))
-print('f eval:',f((arg)))
+opts={'in_dim':[[nd,1]],'out_dim':[[1,1]],'n_in':1,'n_out':1}
+f = jax2tf.call_tf(lambda x: model.predict_y(tf.transpose(x))[0])
 
-gpr = JaxCasadiCallback('f1',f ,opts)
+
+gpr = JaxCasadiCallbackSISO('f1',f ,opts)
 print(gpr(arg))
 #gpr = GPR(model, opts=opts)
+arg1 = np.random.random((nd, 1))
+print(gpr(arg1))
 
 
 w = vertcat(*w)
