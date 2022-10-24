@@ -148,11 +148,10 @@ print('model.predict_y',pr[0])
 # opts = {}
 # opts["out_dim"] = [1, 1]
 # opts["in_dim"] = [nd, 1]
-opts={'in_dim':[[nd,1]],'out_dim':[[1,1]],'n_in':1,'n_out':1}
+opts={'in_dim':nd,'out_dim':1}
 f = jax2tf.call_tf(lambda x: model.predict_y(tf.transpose(x))[0])
 
-
-gpr = JaxCasadiCallbackSISO('f1',f ,opts)
+gpr = JaxCasadiCallbackSISO('f1',f ,in_rows=nd,out_rows=1)
 print(gpr(arg))
 #gpr = GPR(model, opts=opts)
 arg1 = np.random.random((nd, 1))
@@ -176,6 +175,10 @@ w_opt = sol['x'].full().flatten()
 x1_opt = w_opt[0::3]
 x2_opt = w_opt[1::3]
 u_opt = w_opt[2::3]
+
+print('total eval time:',gpr.time)
+print(len(gpr.ref))
+print(gpr.ref[0].time)
 
 tgrid = [T / N * k for k in range(N + 1)]
 import matplotlib.pyplot as plt
