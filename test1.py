@@ -1,10 +1,15 @@
+from jax_casadi_callback import JaxCasadiCallbackSISO,JaxCasadiCallbackJacobian
+import numpy as np
 import casadi as ca
 import jax
-from jax.experimental import jax2tf
 import jax.numpy as jnp
-import numpy as np
-from jax_casadi_callback import JaxCasadiCallbackSISO
-import tensorflow as tf
+import timeit
+import time
+
+theta_1 = theta_2 = theta_3 = 2.25e-4
+c = np.array([2.697,  2.66,  3.05, 2.86])*1e-3
+d = np.array([6.78,  8.01,  8.82])*1e-5
+tau = 1e-2
 
 horizon = 50
 nx = 8
@@ -14,28 +19,160 @@ x0 = np.pi*np.array([1, 1, -1.5, 1, -1, 1, 0, 0]).reshape(-1,1)
 
 option = {}
 option['max_iter']=10000
+option["hessian_approximation"] = "limited-memory"
+
+casadi_option={'print_time':True,'enable_reverse': True}
+
+def casadi_model(x,u):
+    phi_1= x[0,:]
+    phi_2= x[1,:]
+    phi_3= x[2,:]
+    dphi_1= x[3,:]
+    dphi_2= x[4,:]
+    dphi_3= x[5,:]
+    phi_1_m= x[6,:]
+    phi_2_m= x[7,:]
+
+    phi_m_1_set = u[0,:]
+    phi_m_2_set = u[1,:]
+
+    return ca.vertcat(
+        dphi_1,
+        dphi_2,
+        dphi_3,
+        -c[0]/theta_1*(phi_1-phi_1_m)-c[1]/theta_1*(phi_1-phi_2)-d[0]/theta_1*dphi_1,
+        -c[1]/theta_2*(phi_2-phi_1)-c[2]/theta_2*(phi_2-phi_3)-d[1]/theta_2*dphi_2,
+        -c[2]/theta_3*(phi_3-phi_2)-c[3]/theta_3*(phi_3-phi_2_m)-d[2]/theta_3*dphi_3,
+        1/tau*(phi_m_1_set - phi_1_m),
+        1/tau*(phi_m_2_set - phi_2_m)
+    )
+
+def jax_model(x):
+    x=np.reshape(x,(-1,))
+    phi_1= x[0]
+    phi_2= x[1]
+    phi_3= x[2]
+    dphi_1= x[3]
+    dphi_2= x[4]
+    dphi_3= x[5]
+    phi_1_m= x[6]
+    phi_2_m= x[7]
+
+    phi_m_1_set = x[8]
+    phi_m_2_set = x[9]
+
+    
+    return jnp.asarray([
+        dphi_1,
+        dphi_2,
+        dphi_3,
+        -c[0]/theta_1*(phi_1-phi_1_m)-c[1]/theta_1*(phi_1-phi_2)-d[0]/theta_1*dphi_1,
+        -c[1]/theta_2*(phi_2-phi_1)-c[2]/theta_2*(phi_2-phi_3)-d[1]/theta_2*dphi_2,
+        -c[2]/theta_3*(phi_3-phi_2)-c[3]/theta_3*(phi_3-phi_2_m)-d[2]/theta_3*dphi_3,
+        1/tau*(phi_m_1_set - phi_1_m),
+        1/tau*(phi_m_2_set - phi_2_m)]
+    ).reshape(-1,1)
+
+#vmap_model = jax.vmap(jax_model,in_axes=0,out_axes=0)
+
+def jax_full_model(x,N):    
+    # phi_1= x[0,:N]
+    # phi_2= x[1,:N]
+    # phi_3= x[2,:N]
+    # dphi_1= x[3,:N]
+    # dphi_2= x[4,:N]
+    # dphi_3= x[5,:N]
+    # phi_1_m= x[6,:N]
+    # phi_2_m= x[7,:N]
+
+    #phi_m_1_set = x[8,:N]
+    #phi_m_2_set = x[9,:N]
 
 
-# Declare model variables
-x1 = ca.MX.sym('x1',10,1)
-tf_model= tf.keras.models.load_model('output/disk.h5')
+    return jnp.asarray([
+        x[3,:N],
+        x[4,:N],
+        x[5,:N],
+        -c[0]/theta_1*(x[0,:N]-x[6,:N])-c[1]/theta_1*(x[0,:N]-x[1,:N])-d[0]/theta_1*x[3,:N],
+        -c[1]/theta_2*(x[1,:N]-x[0,:N])-c[2]/theta_2*(x[1,:N]-x[2,:N])-d[1]/theta_2*x[4,:N],
+        -c[2]/theta_3*(x[2,:N]-x[1,:N])-c[3]/theta_3*(x[2,:N]-x[7,:N])-d[2]/theta_3*x[5,:N],
+        1/tau*(x[8,:N] - x[6,:N]),
+        1/tau*(x[9,:N] - x[7,:N])],dtype=np.float64
+    )
 
 
-a = np.array([[1, 1, -1.5, 1, -1, 1, 0, 0,0,0]],dtype=np.float32)
-b = tf_model(a)
-print(b)
+N=20
+x = ca.MX.sym('x',8,N)
+u = ca.MX.sym('u',2,N)
+y = ca.MX.sym('y',10,N)
 
-f = jax2tf.call_tf(lambda x: np.transpose(tf_model.predict(tf.transpose(x))))
-print(f(np.transpose(a)))
+dm_x = ca.DM_rand(8,N)
+dm_u = ca.DM_rand(2,N)
+dm_y = ca.DM_rand(10,N)
 
-jax_model = JaxCasadiCallbackSISO('f1',f ,in_rows=10,out_rows=5)
-print(jax_model(np.transpose(a)))
+#print(dm_y.__array_custom__())
+
+
+jax_model_f_siso = JaxCasadiCallbackSISO('jax_model_siso',jax_model,nx+nu,nx)
+jax_model_f_jac = JaxCasadiCallbackJacobian('jax_model_jac',jax.jit(lambda x:jax_full_model(x,N)),nx+nu,nx,N)
+
+casadi_f = ca.Function('callback_f',[x,u],[casadi_model(x,u)])
+callback_siso_f= ca.Function('callback_f',[y],[jax_model_f_siso(y)])
+callback_jac_f= ca.Function('callback_f',[y],[jax_model_f_jac(y)])
+
+
+
+
+f = jax.jit(lambda x:jax_full_model(x,N))
+t0 = time.time()
+np_y = dm_y.full()
+
+v = np.asarray(f(np_y))
+print(time.time()-t0)
+
+callback_siso_v = callback_siso_f(dm_y)
+callback_jac_v = callback_jac_f(dm_y)
+#print(callback_siso_v)
+print(ca.sum2(ca.sum1(callback_jac_v-callback_siso_v)))
+
+t = timeit.Timer(lambda:casadi_f(dm_x,dm_u))
+print(t.timeit(1000))
+
+
+
+
+#t = timeit.Timer(lambda:callback_siso_f(dm_y))
+#print(t.timeit(1000))
+
+#print(jax_model_f_siso.time)
+#print(jax_model_f_siso.its)
+
+
+t = timeit.Timer(lambda:callback_jac_f(dm_y))
+print(t.timeit(1000))
+
+
+
+print('time1',jax_model_f_jac.time1)
+#t = timeit.Timer(lambda:dm_y.__float__())
+#print(t.timeit(1000))
+print('time2',jax_model_f_jac.time2)
+print('time3',jax_model_f_jac.time3)
+#print(jax_model_f_jac.its)
+
+
+
+jac_f = ca.Function('f_jac',[y],[ca.jacobian(callback_jac_f(y),y)])
+
+
+#print(jax_model_f(test_x0))
+print(jac_f(dm_y))
 
 
 #option['print_level']=0
-opti_model = ca.Opti()
-x = opti_model.variable(nx,horizon+1)
-
+opti_jax = ca.Opti()
+x = opti_jax.variable(nx+nu,horizon+1)
+#u = opti_jax.variable(nu,horizon)
 
 phi_1= x[0,:]
 phi_2= x[1,:]
@@ -46,26 +183,34 @@ dphi_3= x[5,:]
 phi_1_m= x[6,:]
 phi_2_m= x[7,:]
 
-phi_m_1_set = u[0,:]
-phi_m_2_set = u[1,:]
+phi_m_1_set = x[8,:]
+phi_m_2_set = x[9,:]
 
-k1 = casadi_model(x[:,0:-1],u)
-k2 = casadi_model(x[:,0:-1]+dt/2*k1,u)
-k3 = casadi_model(x[:,0:-1]+dt/2*k2,u)
-k4 = casadi_model(x[:,0:-1]+dt*k3,u)
+# k1 = casadi_model(x[:,0:-1],u)
+# k2 = casadi_model(x[:,0:-1]+dt/2*k1,u)
+# k3 = casadi_model(x[:,0:-1]+dt/2*k2,u)
+# k4 = casadi_model(x[:,0:-1]+dt*k3,u)
 
 opti_jax.minimize(ca.dot(phi_1,phi_1)+ca.dot(phi_2,phi_2)+ca.dot(phi_3,phi_3)
               +0.001*ca.dot(phi_m_1_set,phi_m_1_set)+0.1*ca.dot(phi_m_2_set,phi_m_2_set)
               +0.001*ca.dot(phi_1_m,phi_1_m)+0.1*ca.dot(phi_2_m,phi_2_m))
 
-opti_jax.subject_to(x[:,1:] == x[:,0:-1]+dt/6*(k1+2*k2+2*k3+k4))
+opti_jax.subject_to(x[0:8,1:] == x[0:8,0:-1]+dt*jax_model_f(x[:,0:-1]))
 
-opti_jax.subject_to(x[:,0]==x0)
+opti_jax.subject_to(x[0:8,0]==x0)
 
-opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,x[0:2,:],2*ca.pi))
-opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,x[6:,:],2*ca.pi))
-opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,u,2*ca.pi))
+opti_jax.subject_to(x[8:,-1]==0)
 
+
+opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,phi_1,2*ca.pi))
+opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,phi_2,2*ca.pi))
+opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,phi_3,2*ca.pi))
+
+opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,phi_1_m,2*ca.pi))
+opti_jax.subject_to(opti_jax.bounded(-2*ca.pi,phi_1_m,2*ca.pi))
+
+opti_jax.subject_to(opti_jax.bounded(-ca.pi,phi_m_1_set,ca.pi))
+opti_jax.subject_to(opti_jax.bounded(-ca.pi,phi_m_2_set,ca.pi))
 
 opti_jax.solver("ipopt",{},option)
 
@@ -77,56 +222,3 @@ try:
 
 except Exception as e:
     print(e)
-
-
-
-
-
-
-# opts = {}
-# opts["out_dim"] = [1, 1]
-# opts["in_dim"] = [nd, 1]
-opts={'in_dim':nd,'out_dim':1}
-f = jax2tf.call_tf(lambda x: model.predict_y(tf.transpose(x))[0])
-
-gpr = JaxCasadiCallbackSISO('f1',f ,in_rows=nd,out_rows=1)
-print(gpr(arg))
-#gpr = GPR(model, opts=opts)
-arg1 = np.random.random((nd, 1))
-print(gpr(arg1))
-
-
-w = vertcat(*w)
-
-# # Create an NLP solver
-prob = {'f': gpr(w[0::3]), 'x': w, 'g': vertcat(*g)}
-# options = {"ipopt": {"hessian_approximation": "limited-memory"}}
-options = {"ipopt": {"hessian_approximation": "limited-memory"}}
-solver = nlpsol('solver', 'ipopt', prob, options);
-sol = solver(x0=w0, lbx=lbw, ubx=ubw, lbg=lbg, ubg=ubg)
-
-#print("Ncalls", gpr.counter)
-#print("Total time [s]", gpr.time)
-w_opt = sol['x'].full().flatten()
-
-# Plot the solution
-x1_opt = w_opt[0::3]
-x2_opt = w_opt[1::3]
-u_opt = w_opt[2::3]
-
-print('total eval time:',gpr.time)
-print(len(gpr.ref))
-print(gpr.ref[0].time)
-
-tgrid = [T / N * k for k in range(N + 1)]
-import matplotlib.pyplot as plt
-
-plt.figure(1)
-plt.clf()
-plt.plot(tgrid, x1_opt, '--')
-plt.plot(tgrid, x2_opt, '-')
-plt.step(tgrid, vertcat(DM.nan(1), u_opt), '-.')
-plt.xlabel('t')
-plt.legend(['x1', 'x2', 'u'])
-plt.grid()
-plt.show()
