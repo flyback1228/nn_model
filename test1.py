@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import timeit
 import time
 
+print(jax.devices())
+
 theta_1 = theta_2 = theta_3 = 2.25e-4
 c = np.array([2.697,  2.66,  3.05, 2.86])*1e-3
 d = np.array([6.78,  8.01,  8.82])*1e-5
@@ -23,7 +25,7 @@ option["hessian_approximation"] = "limited-memory"
 
 casadi_option={'print_time':True,'enable_reverse': True}
 
-def casadi_model(x,u):
+def casadi_model(x):
     phi_1= x[0,:]
     phi_2= x[1,:]
     phi_3= x[2,:]
@@ -33,8 +35,8 @@ def casadi_model(x,u):
     phi_1_m= x[6,:]
     phi_2_m= x[7,:]
 
-    phi_m_1_set = u[0,:]
-    phi_m_2_set = u[1,:]
+    phi_m_1_set = x[8,:]
+    phi_m_2_set = x[9,:]
 
     return ca.vertcat(
         dphi_1,
@@ -75,19 +77,7 @@ def jax_model(x):
 
 #vmap_model = jax.vmap(jax_model,in_axes=0,out_axes=0)
 
-def jax_full_model(x,N):    
-    # phi_1= x[0,:N]
-    # phi_2= x[1,:N]
-    # phi_3= x[2,:N]
-    # dphi_1= x[3,:N]
-    # dphi_2= x[4,:N]
-    # dphi_3= x[5,:N]
-    # phi_1_m= x[6,:N]
-    # phi_2_m= x[7,:N]
-
-    #phi_m_1_set = x[8,:N]
-    #phi_m_2_set = x[9,:N]
-
+def jax_full_model(x,N):  
 
     return jnp.asarray([
         x[3,:N],
@@ -101,27 +91,75 @@ def jax_full_model(x,N):
     )
 
 
-N=20
-x = ca.MX.sym('x',8,N)
-u = ca.MX.sym('u',2,N)
+N=100
+#x = ca.MX.sym('x',8,N)
+#u = ca.MX.sym('u',2,N)
 y = ca.MX.sym('y',10,N)
-
-dm_x = ca.DM_rand(8,N)
-dm_u = ca.DM_rand(2,N)
 dm_y = ca.DM_rand(10,N)
 
 #print(dm_y.__array_custom__())
 
 
-jax_model_f_siso = JaxCasadiCallbackSISO('jax_model_siso',jax_model,nx+nu,nx)
-jax_model_f_jac = JaxCasadiCallbackJacobian('jax_model_jac',jax.jit(lambda x:jax_full_model(x,N)),nx+nu,nx,N)
+#jax_model_f_siso = JaxCasadiCallbackSISO('jax_model_siso',jax_model,nx+nu,nx)
+callback_f = JaxCasadiCallbackJacobian('jax_model_jac',jax.jit(lambda x:jax_full_model(x,N)),nx+nu,nx,N)
 
-casadi_f = ca.Function('callback_f',[x,u],[casadi_model(x,u)])
-callback_siso_f= ca.Function('callback_f',[y],[jax_model_f_siso(y)])
-callback_jac_f= ca.Function('callback_f',[y],[jax_model_f_jac(y)])
+casadi_f = ca.Function('casadi_f',[y],[casadi_model(y)])
+#callback_f= ca.Function('callback_f',[y],[jax_model_f_jac(y)])
+
+casadi_jac = ca.Function('casadi_jac',[y],[ca.jacobian(casadi_model(y),y)])
+callback_jac = ca.Function('callback_jac',[y],[ca.jacobian(callback_f(y),y)])
+
+callback_v = callback_f(dm_y)
+casadi_v = casadi_f(dm_y)
+sum_test = (callback_v-casadi_v)**2
+print(ca.sum2(ca.sum1(sum_test)))
+
+casadi_jac_v = casadi_jac(dm_y)
+callback_jac_v = callback_jac(dm_y)
+sum_test = (casadi_jac_v-callback_jac_v)**2
+print(ca.sum2(ca.sum1(sum_test)))
+
+print(len(callback_f.refs))
+print('jac time1',callback_f.refs[0].time1)
+print('jac time2',callback_f.refs[0].time2)
+print('jac time3',callback_f.refs[0].time3)
+print('jac its',callback_f.refs[0].its)
+
+#print(jax_model_f(test_x0))
+for i in range(100):
+    callback_v = callback_f(dm_y)
+    casadi_v = casadi_f(dm_y)
+    casadi_jac_v = casadi_jac(dm_y)
+    callback_jac_v = callback_jac(dm_y)
 
 
 
+print('f time1',callback_f.time1)
+print('f time2',callback_f.time2)
+print('f time3',callback_f.time3)
+print('f its',callback_f.its)
+
+print(len(callback_f.refs))
+print('jac time1',callback_f.refs[0].time1)
+print('jac time2',callback_f.refs[0].time2)
+print('jac time3',callback_f.refs[0].time3)
+print('jac its',callback_f.refs[0].its)
+
+timer = timeit.Timer(lambda:callback_f(dm_y))
+t = timer.timeit(1000)
+print('call callback cost:',t)
+
+timer = timeit.Timer(lambda:casadi_f(dm_y))
+t = timer.timeit(1000)
+print('call casadi cost:',t)
+
+timer = timeit.Timer(lambda:callback_jac(dm_y))
+t = timer.timeit(100)
+print('call callback jacobian cost:',t)
+
+timer = timeit.Timer(lambda:casadi_jac(dm_y))
+t = timer.timeit(100)
+print('call casadi jacobian cost:',t)
 
 f = jax.jit(lambda x:jax_full_model(x,N))
 t0 = time.time()
@@ -130,10 +168,8 @@ np_y = dm_y.full()
 v = np.asarray(f(np_y))
 print(time.time()-t0)
 
-callback_siso_v = callback_siso_f(dm_y)
-callback_jac_v = callback_jac_f(dm_y)
-#print(callback_siso_v)
-print(ca.sum2(ca.sum1(callback_jac_v-callback_siso_v)))
+
+
 
 t = timeit.Timer(lambda:casadi_f(dm_x,dm_u))
 print(t.timeit(1000))
@@ -162,11 +198,6 @@ print('time3',jax_model_f_jac.time3)
 
 
 
-jac_f = ca.Function('f_jac',[y],[ca.jacobian(callback_jac_f(y),y)])
-
-
-#print(jax_model_f(test_x0))
-print(jac_f(dm_y))
 
 
 #option['print_level']=0

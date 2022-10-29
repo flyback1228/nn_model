@@ -325,16 +325,20 @@ def concat_jac(f,rows):
     return lambda *xs: jnp.hstack([jnp.reshape(jax.jacfwd(f,argnums=i)(*xs),(rows,-1)) for i in range(len(xs))])
 
 
-class ReverseFunJacbian(ca.Callback):
+class JacobianFun(ca.Callback):
     def __init__(self,name,f,opts):
         ca.Callback.__init__(self)
         #self.f = jax.jit(f)
-        self.f = jax.jit(lambda x:jacrev(f)(x).reshape(*self.opts['out_dim'][0]))
+        self.f = jax.jit(lambda x:jacrev(f)(x).reshape(*self.opts['out_dim'][0],order='F'))
         self.opts=opts
         #self.rev_f = jax.jit(lambda x: jax.vjp(self.f,x[0:self.opts['n_in']])[1](tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) )
         #self.rev_f = rev_f)
         self.construct(name, {})
         self.time=0.0
+        self.time1=0
+        self.time2=0
+        self.time3=0
+        self.its = 0
         
 
     def get_n_in(self): return 2
@@ -349,11 +353,39 @@ class ReverseFunJacbian(ca.Callback):
     def has_eval_buffer(self):
         return True
 
-    def eval_buffer(self, arg, res) -> "int":
-        a = np.frombuffer(arg[0], dtype=np.float64).reshape(self.opts['in_dim'][0],order='F')
-        return_value = self.f(a)
+        # Evaluate numerically
+    def eval(self, arg):
+        #print('arg len:',len(arg))
+        #jarg = [jnp.asarray(arg[i]) for i in range(len(arg))]
+        t0 = time.time()
+        jarg = [ar.full() for ar in arg]
+        t1 = time.time()
+        self.time1+=(t1-t0)
+        ret = self.f(jarg[0]).__array__()
+        t2 = time.time()
+        self.time2+=(t2-t1)
+        self.its+=1
+        #ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
+        #self.time += time.time()-t0
+        #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
+        return [ret]
+
+    def eval_buffer(self, arg, res):
+        t0 = time.time()
+        a = jnp.frombuffer(arg[0], dtype=np.float64).reshape(self.opts['in_dim'][0],order='F')
         r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.opts['out_dim'][0]),order='F')
-        r0[:] = np.squeeze(np.asarray(return_value))
+        t1 = time.time()
+        self.time1+=t1-t0
+        r0[:,:] = self.f(a).__array__()#.reshape(*self.opts['out_dim'][0],order='F')        
+        #print(b.device())
+        #print(type(b))
+        t2 = time.time()
+        self.time2+=t2-t1
+        # = b#.__array__()
+        # = b#np.asarray(return_value).reshape(*self.opts['out_dim'][0])#,order='F')
+        t3 = time.time()
+        self.time3+=t3-t2
+        self.its+=1
         #ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
         #self.time += time.time()-t0
         #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
@@ -374,17 +406,7 @@ class ReverseFunJacbian(ca.Callback):
         # self.time3 += t3-t2
         # return 0
 
-    # Evaluate numerically
-    # def eval(self, arg):
-    #     #print('arg len:',len(arg))
-    #     #jarg = [jnp.asarray(arg[i]) for i in range(len(arg))]
-    #     #t0 = time.time()
-    #     jarg = [ar.full() for ar in arg]
-    #     ret = self.f(jarg[0]).__array__()
-    #     #ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
-    #     #self.time += time.time()-t0
-    #     #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
-    #     return [ret]
+
 
     # def has_jacobian(self, *args) -> "bool":
     #     return True
@@ -483,7 +505,7 @@ class JaxCasadiCallbackJacobian(ca.Callback):
         #r1[:,:] = c**2
 
         t0 = time.time()
-        a = np.frombuffer(arg[0], dtype=np.float64).reshape((self.in_rows,-1),order='F')
+        a = jnp.frombuffer(arg[0], dtype=np.float64).reshape((self.in_rows,-1),order='F')
         #a = np.ndarray(arg[0],dtype=np.float64,copy=False,subok=True)#.__array_custom__()
         #print(a)
         t1 = time.time()
@@ -492,9 +514,10 @@ class JaxCasadiCallbackJacobian(ca.Callback):
         t2 = time.time()
         self.time2 += t2-t1
         r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.out_rows,self.N),order='F')
-        r0[:] = np.squeeze(np.asarray(return_value))#.__array__()#.reshape(self.out_rows,self.N).__array__()
+        r0[:] =np.asarray(return_value.reshape(self.out_rows,self.N))#.__array__()#.reshape(self.out_rows,self.N).__array__()
         t3 = time.time()
         self.time3 += t3-t2
+        self.its+=1
         return 0
 
     # Evaluate numerically
@@ -519,15 +542,16 @@ class JaxCasadiCallbackJacobian(ca.Callback):
 
     def has_jacobian(self):
         return True
-
+    
     def get_jacobian(self, name, inames, onames, opts):
         #print(self.name_in)
-        #print(self.name_out)
+        print(opts)
 
         new_opts={}
         new_opts['in_dim'] = [[self.in_rows,self.N],[self.out_rows,self.N]]
-        new_opts['out_dim'] = [[self.in_rows,self.out_rows*self.N]] 
-        callback = ReverseFunJacbian(name,f = self.f, opts=new_opts)
+        new_opts['out_dim'] = [[self.out_rows*self.N,self.in_rows*self.N]] 
+        callback = JacobianFun(name,f = self.f, opts=new_opts)
+        self.refs.append(callback)
         return callback
         #self.refs.append(callback)
         #nominal_in = self.mx_in()        
