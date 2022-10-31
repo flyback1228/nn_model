@@ -93,7 +93,7 @@ def jax_full_model(x,N):
     )
 
 
-N=10
+N=65
 #x = ca.MX.sym('x',8,N)
 #u = ca.MX.sym('u',2,N)
 y = ca.MX.sym('y',10,N)
@@ -104,17 +104,21 @@ dm_y = ca.DM_rand(10,N)
 
 #jax_model_f_siso = JaxCasadiCallbackSISO('jax_model_siso',jax_model,nx+nu,nx)
 callback_f = JaxCasadiCallbackJacobian('jax_model_jac',jax.jit(lambda x:jax_full_model(x,N)),nx+nu,nx,N)
+
 #callback_v = callback_f(dm_y)
 callback_jac = ca.Function('callback_jac',[y],[ca.jacobian(callback_f(y),y)])
+
+it1 = callback_f.callback.its
 callback_jac_v = callback_jac(dm_y)
-print(callback_f.its)
-print(callback_f.callback.its)
+it2 = callback_f.callback.its
+
+print(it1)
+print(it2)
+callback_f.callback.total_N = it2-it1
 
 casadi_f = ca.Function('casadi_f',[y],[casadi_model(y)])
-#callback_f= ca.Function('callback_f',[y],[jax_model_f_jac(y)])
-
 casadi_jac = ca.Function('casadi_jac',[y],[ca.jacobian(casadi_model(y),y)])
-
+casadi_hes = ca.Function('casadi_hes',[y],[ca.jacobian(casadi_jac(y),y)])
 
 callback_v = callback_f(dm_y)
 casadi_v = casadi_f(dm_y)
@@ -127,10 +131,10 @@ sum_test = (casadi_jac_v-callback_jac_v)**2
 print('compare casadi and callback jacobian: ',ca.sum2(ca.sum1(sum_test)))
 
 
-print('callback jac cost time1',callback_f.refs[0].time1)
-print('callback jac cost time2',callback_f.refs[0].time2)
-print('callback jac cost time3',callback_f.refs[0].time3)
-print('callback jac its',callback_f.refs[0].its)
+print('callback jac cost time1',callback_f.callback.time1)
+print('callback jac cost time2',callback_f.callback.time2)
+print('callback jac cost time3',callback_f.callback.time3)
+print('callback jac its',callback_f.callback.its)
 print('callback function its',callback_f.its)
 print()
 
@@ -147,10 +151,10 @@ sum_test = (casadi_jac_v-callback_jac_v)**2
 print('compare casadi and callback jacobian after modify input: ',ca.sum2(ca.sum1(sum_test)))
 
 
-print('callback jac cost time1',callback_f.refs[0].time1)
-print('callback jac cost time2',callback_f.refs[0].time2)
-print('callback jac cost time3',callback_f.refs[0].time3)
-print('callback jac its',callback_f.refs[0].its)
+print('callback jac cost time1',callback_f.callback.time1)
+print('callback jac cost time2',callback_f.callback.time2)
+print('callback jac cost time3',callback_f.callback.time3)
+print('callback jac its',callback_f.callback.its)
 print('callback function its',callback_f.its)
 
 print()
@@ -165,10 +169,10 @@ sum_test = (casadi_jac_v-callback_jac_v)**2
 print('compare casadi and callback jacobian second time but not modify input: ',ca.sum2(ca.sum1(sum_test)))
 
 
-print('callback jac cost time1',callback_f.refs[0].time1)
-print('callback jac cost time2',callback_f.refs[0].time2)
-print('callback jac cost time3',callback_f.refs[0].time3)
-print('callback jac its',callback_f.refs[0].its)
+print('callback jac cost time1',callback_f.callback.time1)
+print('callback jac cost time2',callback_f.callback.time2)
+print('callback jac cost time3',callback_f.callback.time3)
+print('callback jac its',callback_f.callback.its)
 print('callback function its',callback_f.its)
 
 
@@ -186,11 +190,11 @@ print('f time2',callback_f.time2)
 print('f time3',callback_f.time3)
 print('f its',callback_f.its)
 
-print(len(callback_f.refs))
-print('jac time1',callback_f.refs[0].time1)
-print('jac time2',callback_f.refs[0].time2)
-print('jac time3',callback_f.refs[0].time3)
-print('jac its',callback_f.refs[0].its)
+#print(len(callback_f.refs))
+print('jac time1',callback_f.callback.time1)
+print('jac time2',callback_f.callback.time2)
+print('jac time3',callback_f.callback.time3)
+print('jac its',callback_f.callback.its)
 
 timer = timeit.Timer(lambda:callback_f(dm_y))
 t = timer.timeit(1000)
