@@ -71,14 +71,6 @@ test_x = ca.MX.sym('test_x',nx+nu,horizon)
 jac_f = ca.Function('f_jac',[test_x],[ca.jacobian(jax_model_f(test_x),test_x)])
 dm_y = ca.DM_rand(nx+nu,horizon)
 
-it1 = jax_model_f.callback.its
-callback_jac_v = jac_f(dm_y)
-it2 = jax_model_f.callback.its
-
-print(it1)
-print(it2)
-jax_model_f.callback.total_N = it2-it1
-
 
 
 #option['print_level']=0
@@ -135,6 +127,4 @@ try:
 except Exception as e:
     print(e)
 
-print(jax_model_f.callback.its)
-print(jax_model_f.callback.total_N)
-print(jax_model_f.callback.its/jax_model_f.callback.total_N)
+print(jax_model_f.jac_callback.its)
