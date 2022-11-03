@@ -110,7 +110,7 @@ callback_jac = ca.Function('callback_jac',[y],[ca.jacobian(callback_f(y),y)])
 callback_hes = ca.Function('callback_hes',[y],[ca.jacobian(callback_jac(y),y)])
 callback_v = callback_f(dm_y)
 callback_jac_v = callback_jac(dm_y)
-
+callback_hes_v = callback_hes(dm_y)
 
 casadi_f = ca.Function('casadi_f',[y],[casadi_model(y)])
 casadi_jac = ca.Function('casadi_jac',[y],[ca.jacobian(casadi_model(y),y)])

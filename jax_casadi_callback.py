@@ -375,14 +375,13 @@ class JacobianFun(ca.Callback):
 
         self.its+=1        
         #t0 = time.time()
-        a = jnp.frombuffer(arg[0], dtype=np.float64).reshape(self.opts['in_dim'][0],order='F')
+        a = jnp.frombuffer(arg[0], dtype=np.float64).reshape((self.opts['in_dim'][0]),order='F')
         r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.opts['out_dim'][0]),order='F')
         #t1 = time.time()
         #self.time1+=t1-t0
         r0[:,:] = self.f(a)  
         #t2 = time.time()
-        #self.time2+=t2-t1
-                      
+        #self.time2+=t2-t1                      
         return 0
 
     def has_jacobian(self, *args) -> "bool":
@@ -392,14 +391,13 @@ class JacobianFun(ca.Callback):
             def __init__(self,name,f,opts):
                 ca.Callback.__init__(self)
                 #self.f = jax.jit(f)
-                self.f = jax.jit(lambda x:jacrev(f)(x).reshape(*self.opts['out_dim'][0]))
+                self.f = jax.jit(lambda x:jacrev(f)(x))#.reshape((self.opts['out_dim'][0],np.prod(self.opts['in_dim'][0])),order='F'))
                 self.opts=opts
                 #self.rev_f = jax.jit(lambda x: jax.vjp(self.f,x[0:self.opts['n_in']])[1](tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) )
                 #self.rev_f = rev_f)
                 self.construct(name, {})
                 self.time=0.0
                 
-
             def get_n_in(self): return 3
             def get_n_out(self): return 1
 
@@ -409,21 +407,52 @@ class JacobianFun(ca.Callback):
             def get_sparsity_out(self, i):
                 return ca.Sparsity.dense(*self.opts['out_dim'][i])
 
+            def has_eval_buffer(self, *args) -> "bool":
+                return True
+
+            def eval_buffer(self,arg,res) -> "int":
+                #self.its+=1        
+                #t0 = time.time()
+                a = jnp.frombuffer(arg[0], dtype=np.float64).reshape((self.opts['in_dim'][0]),order='F')
+                r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.opts['out_dim'][0]),order='F')
+                b = self.f(a)  
+
+                #t1 = time.time()
+                #self.time1+=t1-t0
+                r0[:,0:np.prod(self.opts['in_dim'][0])] = b.reshape((self.opts['out_dim'][0][0],np.prod(self.opts['in_dim'][0])),order='F')
+                #t2 = time.time()
+                #self.time2+=t2-t1                      
+                return 0
+
+
             # Evaluate numerically
             def eval(self, arg):
                 #print('arg len:',len(arg))
                 #jarg = [jnp.asarray(arg[i]) for i in range(len(arg))]
                 #t0 = time.time()
-                jarg = [ar.full() for ar in arg]
-                ret = self.f(jarg[0]).__array__()
+                #jarg = [ar.full() for ar in arg]
+                jarg = arg[0].full()
+
+                a = self.f(jarg)
+                print(a.shape)
+
+                #ret = self.f(jarg[0]).__array__()
                 #ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
                 #self.time += time.time()-t0
-                #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_                  dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
-                return [ret]
+                #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
+                return [a.__array__()]
+
+        # cols = [self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1] for j in range(self.opts['n_in'])]
+        # cols = np.sum(cols)
+        # for i,out_ in enumerate(self.f):
+        #     new_out.append(concat_jac(out_,self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1]))
+            
+        #     new_out_dim.append([self.opts['out_dim'][i][0]*self.opts['out_dim'][i][1],cols])
+
 
         new_opts={}
         new_opts['in_dim'] = [[self.opts['in_dim'][0][0],self.opts['in_dim'][0][1]],[self.opts['in_dim'][1][0],self.opts['in_dim'][1][1]],[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]]]
-        new_opts['out_dim'] = [[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]*np.prod(self.opts['in_dim'][0])],[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]*np.prod(self.opts['in_dim'][1])]] 
+        new_opts['out_dim'] = [[np.prod(self.opts['out_dim'][0]),np.sum([np.prod(in_dim) for in_dim in self.opts['in_dim']])]]#,[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]*np.prod(self.opts['in_dim'][1])]] 
         callback = HessianFun(name,f = self.f, opts=new_opts)
         self.jac_callback = callback
         return callback
