@@ -23,6 +23,9 @@ print(A)
 
 print(type(ca_a.elements()))
 
+b = ca.DM.eye(100)
 
+b = ca.sparsify(b)
 
+b.resize(100,200)
 print(b)

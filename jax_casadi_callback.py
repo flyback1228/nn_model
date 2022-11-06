@@ -6,7 +6,7 @@ from jax import config, jacfwd, jacrev
 config.update('jax_enable_x64', True)
 import copy
 import time
-from ctypes import addressof
+
 
 
 class JaxCasadiCallback(ca.Callback):
@@ -157,7 +157,9 @@ class JaxCasadiCallbackSISO(ca.Callback):
         self.rev_f = jax.jit(lambda x: jax.vjp(self.f,x[0])[1](x[2]) )
         # = rev_f)
         self.construct(name, {"enable_fd": True})
-        self.time = 0
+        self.time1 = 0
+        self.time2 = 0
+        self.time3 = 0
         self.its = 0
         self.ref=[]
         
@@ -171,6 +173,26 @@ class JaxCasadiCallbackSISO(ca.Callback):
     def get_sparsity_out(self, i):
         #return ca.Sparsity.dense(self.opts['out_dim'][i][0],self.opts['out_dim'][i][1])
         return ca.Sparsity.dense(self.out_rows,1)
+
+    def has_eval_buffer(self, *args) -> "bool":
+        return True
+
+    def eval_buffer(self, arg, res) -> "int":
+
+        t0 = time.time()
+        a = jnp.frombuffer(arg[0], dtype=np.float64).reshape((self.in_rows,-1),order='F')
+        r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.out_rows,-1),order='F')
+        t1 = time.time()
+        self.time1 += t1-t0
+        r0[:] = self.f(a)#.reshape(self.out_rows,self.N)#.reshape(self.out_rows,self.N).__array__()
+        t2 = time.time()
+        self.time2 += t2-t1
+        
+        t3 = time.time()
+        self.time3 += t3-t2
+        self.its+=1
+        
+        return 0
 
     def eval(self, arg):
         #print(arg)
@@ -396,7 +418,10 @@ class JacobianFun(ca.Callback):
                 #self.rev_f = jax.jit(lambda x: jax.vjp(self.f,x[0:self.opts['n_in']])[1](tuple(x[self.opts['n_in']+self.opts['n_out']:self.opts['n_in']+2*self.opts['n_out']])) )
                 #self.rev_f = rev_f)
                 self.construct(name, {})
-                self.time=0.0
+                self.time1=0.0
+                self.time2=0.0
+                self.time3=0.0
+                self.its=0
                 
             def get_n_in(self): return 3
             def get_n_out(self): return 1
@@ -405,23 +430,26 @@ class JacobianFun(ca.Callback):
                 return ca.Sparsity.dense(*self.opts['in_dim'][i])
 
             def get_sparsity_out(self, i):
-                return ca.Sparsity.dense(*self.opts['out_dim'][i])
+                return ca.Sparsity(*self.opts['out_dim'][i])
 
             def has_eval_buffer(self, *args) -> "bool":
-                return True
+                return False
 
             def eval_buffer(self,arg,res) -> "int":
-                #self.its+=1        
-                #t0 = time.time()
+                self.its+=1        
+                t0 = time.time()
                 a = jnp.frombuffer(arg[0], dtype=np.float64).reshape((self.opts['in_dim'][0]),order='F')
                 r0 = np.frombuffer(res[0], dtype=np.float64).reshape((self.opts['out_dim'][0]),order='F')
-                b = self.f(a)  
-
-                #t1 = time.time()
-                #self.time1+=t1-t0
-                r0[:,0:np.prod(self.opts['in_dim'][0])] = b.reshape((self.opts['out_dim'][0][0],np.prod(self.opts['in_dim'][0])),order='F')
-                #t2 = time.time()
-                #self.time2+=t2-t1                      
+                t1 = time.time()
+                self.time1+=t1-t0
+                #b =   
+                t2 = time.time()
+                self.time2+=t2-t1             
+                
+                
+                r0[:,0:np.prod(self.opts['in_dim'][0])] = self.f(a).reshape((self.opts['out_dim'][0][0],np.prod(self.opts['in_dim'][0])),order='F')
+                t3 = time.time()
+                self.time3+=t3-t2                     
                 return 0
 
 
@@ -431,16 +459,28 @@ class JacobianFun(ca.Callback):
                 #jarg = [jnp.asarray(arg[i]) for i in range(len(arg))]
                 #t0 = time.time()
                 #jarg = [ar.full() for ar in arg]
+                self.its+=1        
+                t0 = time.time()
                 jarg = arg[0].full()
 
+                t1 = time.time()
+                self.time1+=t1-t0
                 a = self.f(jarg)
+
                 print(a.shape)
 
+                t2 = time.time()
+                self.time2+=t2-t1   
+
+                a = ca.Sparsity(a.reshape((self.opts['out_dim'][0][0],-1),order='F').__array__())
+                a.resize(*self.opts['out_dim'][i])
+                t3 = time.time()
+                self.time3+=t3-t2    
                 #ret = self.f(jarg[0]).__array__()
                 #ret=ret[0] if isinstance(ret[0], (list, tuple)) else ret 
                 #self.time += time.time()-t0
                 #return [np.asarray(jnp.reshape(ret[i],(self.opts['out_dim'][i][0],np.prod(self.opts['out_dim'][i][1:])))) for i in range(len(ret))]                 
-                return [a.__array__()]
+                return [a]
 
         # cols = [self.opts['in_dim'][j][0]*self.opts['in_dim'][j][1] for j in range(self.opts['n_in'])]
         # cols = np.sum(cols)
@@ -453,16 +493,11 @@ class JacobianFun(ca.Callback):
         new_opts={}
         new_opts['in_dim'] = [[self.opts['in_dim'][0][0],self.opts['in_dim'][0][1]],[self.opts['in_dim'][1][0],self.opts['in_dim'][1][1]],[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]]]
         new_opts['out_dim'] = [[np.prod(self.opts['out_dim'][0]),np.sum([np.prod(in_dim) for in_dim in self.opts['in_dim']])]]#,[self.opts['out_dim'][0][0],self.opts['out_dim'][0][1]*np.prod(self.opts['in_dim'][1])]] 
+        #new_opts['out_dim'] = [[np.prod(self.opts['out_dim'][0]),np.prod(self.opts['in_dim'][0]) 
+
         callback = HessianFun(name,f = self.f, opts=new_opts)
         self.jac_callback = callback
         return callback
-        #nominal_in = self.mx_in()        
-        #nominal_out = self.mx_out()
-        #adj_seed = self.mx_out()
-        #casadi_bal = callback.call(nominal_in)
-        #casadi_bal = [bal.T() for bal in casadi_bal]
-        #out = ca.horzcat(*casadi_bal)
-        #return ca.Function(name, nominal_in + nominal_out, casadi_bal, inames, onames)
         
 
 
@@ -651,4 +686,4 @@ def mimo_test():
     print('---------------------------------')
 
 if __name__ =='__main__':
-    mimo_test()
+    siso_test()

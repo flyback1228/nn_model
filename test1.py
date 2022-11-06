@@ -27,7 +27,7 @@ option["hessian_approximation"] = "limited-memory"
 
 casadi_option={'print_time':True,'enable_reverse': True}
 
-def casadi_model(x):
+def casadi_full_model(x):
     phi_1= x[0,:]
     phi_2= x[1,:]
     phi_3= x[2,:]
@@ -39,6 +39,30 @@ def casadi_model(x):
 
     phi_m_1_set = x[8,:]
     phi_m_2_set = x[9,:]
+
+    return ca.vertcat(
+        dphi_1,
+        dphi_2,
+        dphi_3,
+        -c[0]/theta_1*(phi_1-phi_1_m)-c[1]/theta_1*(phi_1-phi_2)-d[0]/theta_1*dphi_1,
+        -c[1]/theta_2*(phi_2-phi_1)-c[2]/theta_2*(phi_2-phi_3)-d[1]/theta_2*dphi_2,
+        -c[2]/theta_3*(phi_3-phi_2)-c[3]/theta_3*(phi_3-phi_2_m)-d[2]/theta_3*dphi_3,
+        1/tau*(phi_m_1_set - phi_1_m),
+        1/tau*(phi_m_2_set - phi_2_m)
+    )
+
+def casadi_model(x):
+    phi_1= x[0]
+    phi_2= x[1]
+    phi_3= x[2]
+    dphi_1= x[3]
+    dphi_2= x[4]
+    dphi_3= x[5]
+    phi_1_m= x[6]
+    phi_2_m= x[7]
+
+    phi_m_1_set = x[8]
+    phi_m_2_set = x[9]
 
     return ca.vertcat(
         dphi_1,
@@ -77,7 +101,6 @@ def jax_model(x):
         1/tau*(phi_m_2_set - phi_2_m)]
     ).reshape(-1,1)
 
-#vmap_model = jax.vmap(jax_model,in_axes=0,out_axes=0)
 
 def jax_full_model(x,N):  
 
@@ -100,7 +123,7 @@ N=20
 #u = ca.MX.sym('u',2,N)
 y = ca.MX.sym('y',10,N)
 dm_y = ca.DM_rand(10,N)
-
+jnp_y = jnp.asarray(dm_y)
 #print(dm_y.__array_custom__())
 
 
@@ -108,26 +131,144 @@ dm_y = ca.DM_rand(10,N)
 callback_f = JaxCasadiCallbackJacobian('jax_model_jac',jax.jit(lambda x:jax_full_model(x,N)),nx+nu,nx,N)
 callback_jac = ca.Function('callback_jac',[y],[ca.jacobian(callback_f(y),y)])
 callback_hes = ca.Function('callback_hes',[y],[ca.jacobian(callback_jac(y),y)])
+
+t0 = time.time()
 callback_v = callback_f(dm_y)
+t1 = time.time()
+print('callback full eval cost:',t1-t0)
+
+t0 = time.time()
 callback_jac_v = callback_jac(dm_y)
+t1 = time.time()
+print('callback full jac cost:',t1-t0)
+t0 = time.time()
 callback_hes_v = callback_hes(dm_y)
+t1 = time.time()
+print('callback full hessian cost:',t1-t0)
+print('hessian value')
+print(callback_hes_v)
 
-casadi_f = ca.Function('casadi_f',[y],[casadi_model(y)])
-casadi_jac = ca.Function('casadi_jac',[y],[ca.jacobian(casadi_model(y),y)])
-casadi_hes = ca.Function('casadi_hes',[y],[ca.jacobian(casadi_jac(y),y)])
 
 
+casadi_full_f = ca.Function('casadi_full_f',[y],[casadi_full_model(y)])
+casadi_full_jac = ca.Function('casadi_full_jac',[y],[ca.jacobian(casadi_full_model(y),y)])
+casadi_full_hes = ca.Function('casadi_full_hes',[y],[ca.jacobian(casadi_full_jac(y),y)])
 
-callback_v = callback_f(dm_y)
-casadi_v = casadi_f(dm_y)
+t0 = time.time()
+casadi_v = casadi_full_f(dm_y)
+casadi_jac_v = casadi_full_jac(dm_y)
+casadi_hes_v = casadi_full_hes(dm_y)
+t1 = time.time()
+
 
 sum_test = (callback_v-casadi_v)**2
-print('compare casadi and callback function: ',ca.sum2(ca.sum1(sum_test)))
+print("call f compare: ",ca.sum2(ca.sum1(sum_test)))
+sum_test = (callback_jac_v-casadi_jac_v)**2
+print("call jac compare: ",ca.sum2(ca.sum1(sum_test)))
+sum_test = (callback_hes_v-casadi_hes_v)**2
+print("call hes compare: ",ca.sum2(ca.sum1(sum_test)))
 
-casadi_jac_v = casadi_jac(dm_y)
+print('hessian time 1: ',callback_f.jac_callback.jac_callback.time1)
+print('hessian time 2: ',callback_f.jac_callback.jac_callback.time2)
+print('hessian time 3: ',callback_f.jac_callback.jac_callback.time3)
+print('iteraters: ',callback_f.jac_callback.jac_callback.its)
 
+
+t0 = time.time()
+callback_jac_v = callback_jac(dm_y)
+t1 = time.time()
+print('callback full jac cost:',t1-t0)
+t0 = time.time()
+callback_hes_v = callback_hes(dm_y)
+t1 = time.time()
+print('callback full hessian cost:',t1-t0)
+
+
+t0 = time.time()
+callback_jac_v = callback_jac(dm_y)
+t1 = time.time()
+print('callback full jac cost:',t1-t0)
+t0 = time.time()
+callback_hes_v = callback_hes(dm_y)
+t1 = time.time()
+print('callback full hessian cost:',t1-t0)
+
+
+
+
+casadi_single_f = ca.Function('casadi_single_f',[y],[casadi_model(y)])
+casadi_single_jac = ca.Function('casadi_single_jac',[y],[ca.jacobian(casadi_model(y),y)])
+casadi_single_hes = ca.Function('casadi_single_hes',[y],[ca.jacobian(casadi_single_jac(y),y)])
+
+t0 = time.time()
+casadi_v = casadi_single_f(dm_y)
+casadi_jac_v = casadi_single_jac(dm_y)
+casadi_hes_v = casadi_single_hes(dm_y)
+t1 = time.time()
+
+print('------------------')
+print('casadi single eval:')
+print(casadi_jac_v.shape)
+print(casadi_hes_v.shape)
+print('cost: ',t1-t0)
+
+jax_full_f = jax.jit(lambda x:jax_full_model(x,N=N))
+jax_full_jac = jax.jit(jax.jacfwd(jax_full_f))
+jax_full_hessian = jax.jit(jax.hessian(jax_full_f))
+
+t0 = time.time()
+jax_full_v = jax_full_f(jnp_y)
+t1 = time.time()
+jax_full_jac_v = jax_full_jac(jnp_y)
+t2 = time.time()
+jax_full_hes_v = jax_full_hessian(jnp_y)
+t3 = time.time()
+
+print('------------------')
+print('jax full eval:')
+print(jax_full_jac_v.shape)
+print(jax_full_hes_v.shape)
+print('cost: ',t1-t0)
+print('cost: ',t2-t1)
+print('cost: ',t3-t2)
+
+
+vmap_model = jax.vmap(jax_model,in_axes=1,out_axes=1)
+jax_single_f = jax.jit(vmap_model)
+jax_single_jac = jax.jit(jax.vmap(jax.jacfwd(jax_model),in_axes=1))
+#jax_single_hessian = jax.jit(jax.vmap(jax.hessian(jax_model),in_axes=1))
+jax_single_hessian = jax.jit(jax.vmap(jax.hessian(jax_model),in_axes=1))
+
+t0 = time.time()
+jax_single_v = jax_single_f(jnp_y)
+t1 = time.time()
+jax_single_jac_v = jax_single_jac(jnp_y)
+t2 = time.time()
+jax_single_hes_v = jax_single_hessian(jnp_y)
+t3 = time.time()
+
+print('------------------')
+print('jax single eval:')
+print(jax_single_jac_v.shape)
+print(jax_single_hes_v.shape)
+print('cost: ',t1-t0)
+print('cost: ',t2-t1)
+print('cost: ',t3-t2)
+
+
+
+
+
+
+
+dm_y[0,1]=0.5
+callback_v = callback_f(dm_y)
+sum_test = (callback_v-casadi_v)**2
+print('compare casadi and callback function after modify input: ',ca.sum2(ca.sum1(sum_test)))
+
+callback_jac_v = callback_jac(dm_y)
 sum_test = (casadi_jac_v-callback_jac_v)**2
-print('compare casadi and callback jacobian: ',ca.sum2(ca.sum1(sum_test)))
+print('compare casadi and callback jacobian after modify input: ',ca.sum2(ca.sum1(sum_test)))
 
 
 print('callback jac cost time1',callback_f.jac_callback.time1)
@@ -137,17 +278,10 @@ print('callback jac its',callback_f.jac_callback.its)
 print('callback function its',callback_f.its)
 print()
 
+callback_hes_v = callback_hes(dm_y)
+sum_test = (casadi_hes_v-callback_hes_v)**2
+print('compare casadi and callback hessian after modify input: ',ca.sum2(ca.sum1(sum_test)))
 
-dm_y[0,1]=0.5
-callback_v = callback_f(dm_y)
-casadi_v = casadi_f(dm_y)
-sum_test = (callback_v-casadi_v)**2
-print('compare casadi and callback function after modify input: ',ca.sum2(ca.sum1(sum_test)))
-
-casadi_jac_v = casadi_jac(dm_y)
-callback_jac_v = callback_jac(dm_y)
-sum_test = (casadi_jac_v-callback_jac_v)**2
-print('compare casadi and callback jacobian after modify input: ',ca.sum2(ca.sum1(sum_test)))
 
 
 print('callback jac cost time1',callback_f.jac_callback.time1)
@@ -294,6 +428,8 @@ opti_jax.subject_to(opti_jax.bounded(-ca.pi,phi_m_1_set,ca.pi))
 opti_jax.subject_to(opti_jax.bounded(-ca.pi,phi_m_2_set,ca.pi))
 
 opti_jax.solver("ipopt",{},option)
+
+
 
 try:
     jax_sol = opti_jax.solve()
